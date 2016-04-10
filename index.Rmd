@@ -1,0 +1,177 @@
+---
+title: "Determination of correctness of dumbell lifts"
+author: "Chad Junkermeier, Ph.D."
+output:
+  html_document:
+    toc: no
+  pdf_document:
+    highlight: zenburn
+    toc: no
+---
+\fontsize{9}{9}
+
+## Executive Overview 
+With the rise of smart phones and fitness bands people have started being able to quantify the amount of excersie that they are performing.  Using a set of sensors, Ugulino et al. measured the accelerations associated with correctly, and incorrectly, performing several weight lifting exercises.  We used random forest (rf), boosted trees (gbm), linear discriminant analysis (lda), and state vector machines (svm) algorithyms to create models of the training data and then stacked (ensemble) the predictions together using gbm.  Based on the provided test set, our model determines if a repetition was performed correctly, or incorrectly, with 99% accuracy.
+
+
+```{r, echo=FALSE,include=FALSE, comment="", warnings = FALSE,message = FALSE}
+library(caret)
+library(gbm)
+library(data.table)
+library(dplyr)
+library(e1071)
+```
+
+## The data
+Ugulino et alia's website states: "Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E)."
+
+The data contains quite a few columns which are mostly NA's or empty (i.e. kurtosis_roll_belt).  In the few rows where those columns are not empty an element or two in that row as a symbol indicating division by zero.  We do not see these divide by zero in the other data.  Those rows where the non-empty values reside are associated with a value of "yes" in the "new_window" column, thus we will keep only the rows where the "new_window" element is equal to "no."  Once this is done, we will delete all of the empty columns using the function colsNotEmpty.  Finally, we will also delete the first seven columns because they are not needed in our analysis.  We will also convert all of the classe column into a factor variable.
+
+```{r, echo = FALSE}
+#download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", method="curl", destfile="~/Desktop/pml-training.csv")
+#download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", method="curl", destfile="~/Desktop/pml-testing.csv")
+```
+
+
+```{r, echo = TRUE}
+colsNotEmpty <- function(dataset){ 
+  #This function deletes all columns that are empty or NA.
+     same <- sapply(dataset, function(.col){ 
+         all(is.na(.col))  || all(.col[1L] == .col)}) 
+     coNam <- names( which(!same)) 
+     colNums <- match(coNam,names(dataset))
+     return(select(dataset, colNums))} 
+
+TRAINING <- fread("~/Desktop/pml-training.csv", header=TRUE, na.strings=c("NA","")) %>% mutate(classe = as.factor(classe)) %>% filter(new_window=="no")  %>% colsNotEmpty()
+
+TESTING <- fread("~/Desktop/pml-testing.csv", header=TRUE, na.strings=c("NA","")) %>% filter(new_window=="no") %>% select(-c(V1:num_window)) %>% colsNotEmpty()
+```
+
+## Testing training schemes
+
+To create an ensembled prediction model we will first create a subset of the TRAINING data frame  into three data frames one with about a fourth of the training data, with the rest of the training data being evenly split between other subsets, SMALLER2.TRAINING and SMALLER3.TESTING.  We will use SMALLER1.TRAINING to train the models and the other we will use to determine the accuracy of each model and perform cross validation.  We will remove the classe data from SMALLER3.TESTING putting into SMALLER3.RESULTS which we will use to validate our ensembled model.
+
+
+```{r, echo = TRUE}
+set.seed(123)
+smaller <- createDataPartition(y=TRAINING$classe, p=0.25, list=FALSE)
+SMALLER1.TRAINING <- TRAINING[smaller,]
+
+modFit1.rf <- train(classe ~ ., method="rf", data=SMALLER1.TRAINING)
+modFit1.gbm <- train(classe ~ ., method="gbm", data=SMALLER1.TRAINING, verbose=FALSE)
+modFit1.lda <- train(classe ~ ., method="lda", data=SMALLER1.TRAINING)
+modFit1.svm<- svm(classe ~ .,data=SMALLER1.TRAINING)
+```
+
+
+
+
+```{r, echo=TRUE}
+nSMALLER1.TRAINING <- TRAINING[-smaller,]
+set.seed(99)
+smaller2 <-  createDataPartition(y=nSMALLER1.TRAINING$classe, p=0.5, list=FALSE)
+SMALLER2.TRAINING <- nSMALLER1.TRAINING[smaller2,]  
+SMALLER3.TESTING <- nSMALLER1.TRAINING[-smaller2,] %>% dplyr::select(-c(classe))
+SMALLER3.RESULTS <- nSMALLER1.TRAINING[-smaller2,]$classe
+```
+
+
+## Cross validation
+
+Using the confusion matrix we can estimate the accuracy of each method.  We'll use the mmodels produced with the SMALLER1.TRAINING data to estimate the results of the SMALLER2.TRAINING data.  As we see below the random forest method appears to do the best at predicting the quality of the exercise.
+
+```{r, echo=TRUE}
+predict2.rf <- predict(modFit1.rf, newdata=SMALLER2.TRAINING)
+predict2.gbm <- predict(modFit1.gbm, newdata=SMALLER2.TRAINING)
+predict2.lda <- predict(modFit1.lda, newdata=SMALLER2.TRAINING)
+predict2.svm <- predict(modFit1.svm, newdata=SMALLER2.TRAINING)
+
+confusionMatrix(predict2.rf, SMALLER2.TRAINING$classe)$overall[1]
+confusionMatrix(predict2.gbm, SMALLER2.TRAINING$classe)$overall[1]
+confusionMatrix(predict2.lda, SMALLER2.TRAINING$classe)$overall[1]
+confusionMatrix(predict2.svm, SMALLER2.TRAINING$classe)$overall[1]
+```
+
+Further by looking at each of the predictions we see that each of them produces the wrong classification on different measurements.
+
+```{r, echo=TRUE}
+indexOfDifferences <- function(v1, v2){
+ #This function returns the vector containing the positions of 
+ #elements that are not the same in two vectors.
+    n = length(v1)
+    vec <- vector()
+    ss = 1
+    for (s in 1:n){
+            if (v1[s] != v2[s]){
+                vec[ss] <- s
+                ss = ss + 1}}
+    return(vec)}
+
+
+head(indexOfDifferences(predict2.rf , SMALLER2.TRAINING$classe), n=10)
+head(indexOfDifferences(predict2.svm , SMALLER2.TRAINING$classe), n=10)
+head(indexOfDifferences(predict2.lda , SMALLER2.TRAINING$classe), n=10)
+head(indexOfDifferences(predict2.svm , SMALLER2.TRAINING$classe), n=10)
+```
+
+
+
+## Model stacking and Out of Sample Error
+
+In order to perform the model stacking, also called ensembling, we take the models that we produced above to train a new function against SMALLER2.TRAINING.  Training the ensembled function against SMALLER2.TRAINING helps ensure that overfitting of SMALLER1.TRAINING does not occur.  The new model is called combModFit.  The hope with ensembling is that the new model of models will give a more robust answer than any specific model.  At least for the test case SMALLER3.TESTING the ensembled model, combModFit, has a slightly poor accuracy than the modFit1.rf model, as is shown below.  That said, because we are trying to learn how to do this and not necessarily get the best model we will use combModFit.
+
+```{r, echo=TRUE}
+predDF <- data.frame(rf=predict2.rf, gbm=predict2.gbm,  svm=predict2.svm, classe=SMALLER2.TRAINING$classe)
+
+
+combModFit <- train(classe ~ ., method="rf", data=predDF, verbose=FALSE)
+
+
+SMALLER3.rf <- predict(modFit1.rf, newdata=SMALLER3.TESTING)
+SMALLER3.gbm <- predict(modFit1.gbm, newdata=SMALLER3.TESTING)
+SMALLER3.svm <- predict(modFit1.svm, newdata=SMALLER3.TESTING)
+
+SMALLER3.ensemble <- data.frame(rf=SMALLER3.rf, gbm=SMALLER3.gbm, svm=SMALLER3.svm)
+
+combModFit.SMALLER3.results <- predict(combModFit, newdata=SMALLER3.ensemble)
+
+
+
+confusionMatrix(SMALLER3.rf, SMALLER3.RESULTS)$overall[1]
+confusionMatrix(SMALLER3.gbm, SMALLER3.RESULTS)$overall[1]
+confusionMatrix(SMALLER3.svm, SMALLER3.RESULTS)$overall[1]
+confusionMatrix(combModFit.SMALLER3.results, SMALLER3.RESULTS)$overall[1]
+```
+
+
+
+
+## Predictions on test data
+
+Finally, we will produce a prediction of the results.
+
+```{r, echo=TRUE}
+quiz.rf <- predict(modFit1.rf, newdata=TESTING)
+quiz.gbm <- predict(modFit1.gbm, newdata=TESTING)
+quiz.svm <- predict(modFit1.svm, newdata=TESTING)
+
+
+
+quiz.ensemble <- data.frame(rf=quiz.rf, gbm=quiz.gbm, svm=quiz.svm)
+
+predict(combModFit, quiz.ensemble)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
